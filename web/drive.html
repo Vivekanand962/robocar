@@ -1,0 +1,166 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Robot Car</title>
+<style>
+*{box-sizing:border-box;-webkit-user-select:none;user-select:none}
+body{margin:0;font-family:system-ui,sans-serif;background:#111;color:#eee;text-align:center}
+#top{display:flex;justify-content:space-between;gap:8px;padding:6px 10px;font-size:13px;background:#1b1e25;flex-wrap:wrap}
+#top b{color:#8cf}
+#drv.busy{color:#fa3}
+#drv.me{color:#4d4}
+#wrap{position:relative;width:100%;max-width:640px;margin:0 auto}
+#cam{width:100%;aspect-ratio:4/3;background:#000;display:block;object-fit:fill}
+#ov{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
+#camMsg{position:absolute;left:0;right:0;top:45%;color:#888;font-size:14px}
+#ai{font-size:12px;color:#8cf;padding:2px;min-height:16px}
+.row{display:flex;justify-content:center;gap:14px;padding:6px;font-size:15px;flex-wrap:wrap}
+#dist{font-size:26px;font-weight:bold}
+.modes button,.route button{font-size:15px;padding:8px 14px;margin:3px;border:0;border-radius:8px;background:#444;color:#fff}
+.modes button.act{background:#27c}
+.modes button.fol{background:#a3c}
+.route button.rec{background:#c33}
+.pad{display:grid;grid-template-columns:repeat(3,88px);grid-template-rows:repeat(3,72px);gap:8px;justify-content:center;margin:8px auto}
+.b{border:0;border-radius:12px;background:#2a6;color:#fff;font-size:28px;touch-action:none}
+.b.on{background:#3c8}
+.stop{background:#c33}
+.empty{visibility:hidden}
+#st{font-size:13px;color:#9c9;padding:4px 4px 16px}
+#st.bad{color:#f66}
+</style></head><body>
+<div id="top"><span>&#128663; <b id="you">...</b></span><span id="drv">-</span><span id="left"></span></div>
+<div id="wrap"><img id="cam" alt="camera"><canvas id="ov"></canvas><div id="camMsg">Connecting camera...</div></div>
+<div id="ai"></div>
+<div class="row"><span id="dist">---</span><span id="bat">Bat --</span></div>
+<div class="modes"><button id="mMan" class="act" onclick="setMode('manual')">MANUAL</button><button id="mAuto" onclick="setMode('auto')">AUTO</button><button id="mFol" onclick="startFollow()">FOLLOW</button></div>
+<div class="pad">
+ <div class="empty"></div><button class="b" data-c="F">&#9650;</button><div class="empty"></div>
+ <button class="b" data-c="L">&#9664;</button><button class="b stop" data-c="S">&#9632;</button><button class="b" data-c="R">&#9654;</button>
+ <div class="empty"></div><button class="b" data-c="B">&#9660;</button><div class="empty"></div>
+</div>
+<div class="row">Speed <input type="range" id="spd" min="80" max="255" value="160"> <span id="sv">160</span></div>
+<div class="route">
+ <button id="rec" onclick="route('rec')">&#9679; REC</button>
+ <button onclick="route('play')">&#9654; PLAY</button>
+ <button onclick="route('ret')">&#8634; RETURN</button>
+ <button onclick="route('clear')">CLEAR</button>
+</div>
+<div id="st">Connecting...</div>
+<script>
+const $=id=>document.getElementById(id);
+const spd=$('spd'),st=$('st'),cam=$('cam');
+spd.oninput=()=>$('sv').textContent=spd.value;
+let timer=null,lastErr=0;
+
+function note(msg){st.textContent=msg;st.className='bad';lastErr=Date.now();}
+async function api(path){
+  try{
+    const r=await fetch('/api/'+path,{cache:'no-store'});
+    if(r.status===403){location.reload();return;}
+    if(!r.ok){const j=await r.json().catch(()=>({}));note(j.error||('Error '+r.status));}
+  }catch(e){note('Connection lost');}
+}
+function send(c){api('cmd?go='+c+'&spd='+spd.value);}
+function start(c){clearInterval(timer);send(c);if(c!=='S')timer=setInterval(()=>send(c),200);}
+function stop(){clearInterval(timer);timer=null;send('S');}
+document.querySelectorAll('.b').forEach(b=>{
+  const c=b.dataset.c;
+  b.addEventListener('pointerdown',e=>{e.preventDefault();b.classList.add('on');start(c);});
+  ['pointerup','pointerleave','pointercancel'].forEach(ev=>b.addEventListener(ev,()=>{if(b.classList.contains('on')){b.classList.remove('on');stop();}}));
+  b.addEventListener('contextmenu',e=>e.preventDefault());
+});
+const keys={w:'F',s:'B',a:'L',d:'R',ArrowUp:'F',ArrowDown:'B',ArrowLeft:'L',ArrowRight:'R'};let held=null;
+document.addEventListener('keydown',e=>{const c=keys[e.key];if(c){e.preventDefault();if(held!==c){held=c;start(c);}}});
+document.addEventListener('keyup',e=>{if(keys[e.key]===held){held=null;stop();}});
+window.addEventListener('blur',()=>{if(timer)stop();});
+function setMode(m){if(m!=='follow')following=false;api('mode?m='+m+'&spd='+spd.value);}
+function route(a){api('route?a='+a);}
+
+// ---------- camera: MJPEG stream, fallback to snapshots if the tunnel buffers it ----------
+let camMode='stream',gotFrame=false;
+cam.onload=()=>{gotFrame=true;$('camMsg').style.display='none';if(camMode==='snap')setTimeout(nextSnap,40);};
+cam.onerror=()=>{if(camMode==='snap')setTimeout(nextSnap,1000);else setTimeout(()=>{cam.src='/cam/stream?t='+Date.now();},2000);};
+function nextSnap(){cam.src='/cam/frame.jpg?t='+Date.now();}
+cam.src='/cam/stream';
+setTimeout(()=>{if(!gotFrame&&!cam.naturalWidth){camMode='snap';nextSnap();}},6000);
+
+function fmtLeft(s){if(!s)return'';const m=Math.floor(s/60);return m>=60?Math.floor(m/60)+'h '+(m%60)+'m left':m+'m '+(s%60)+'s left';}
+function poll(){fetch('/api/status',{cache:'no-store'}).then(r=>{if(r.status===403){location.reload();throw 0;}return r.json();}).then(s=>{
+  $('you').textContent=s.you;
+  $('left').textContent=fmtLeft(s.left);
+  const d=$('drv');
+  if(s.you_drive){d.textContent='You are driving';d.className='me';}
+  else if(s.driver){d.textContent=s.driver+' is driving';d.className='busy';}
+  else{d.textContent='Car is free';d.className='';}
+  if(!gotFrame)$('camMsg').textContent=s.cam_error?('Camera: '+s.cam_error):'Connecting camera...';
+  if(!s.online){note('Car offline: '+(s.error||'no response'));return;}
+  const j=s.robot;
+  $('dist').textContent=j.d>=999?'clear':Math.round(j.d)+' cm';
+  $('dist').style.color=j.d<20?'#f44':(j.d<50?'#fa3':'#4d4');
+  $('bat').textContent=j.bat>1?('Bat '+j.bat.toFixed(2)+'V'+(j.crit?' CRITICAL':(j.low?' LOW':''))):'Bat --';
+  $('bat').style.color=j.crit?'#f44':(j.low?'#fa3':'#eee');
+  $('mMan').className=j.mode==='MANUAL'?'act':'';
+  $('mAuto').className=j.mode==='AUTO'?'act':'';
+  $('mFol').className=j.mode==='FOLLOW'?'fol':'';
+  if(following&&j.mode!=='FOLLOW')following=false;
+  $('rec').className=j.rec?'rec':'';
+  $('rec').innerHTML=j.rec?'&#9632; STOP REC ('+j.steps+')':'&#9679; REC';
+  if(Date.now()-lastErr>2500){st.className='';st.textContent=j.blocked?'Obstacle ahead! Forward blocked':(j.msg+' | Mode: '+j.mode+' | Route steps: '+j.steps);}
+}).catch(e=>{if(e!==0)note('Connection lost');});}
+setInterval(poll,400);poll();
+
+// ================= HUMAN FOLLOW (AI runs in this browser) =================
+let model=null,following=false,aiBusy=false,fpsT=0,fpsN=0;
+const W=320,H=240;
+const work=document.createElement('canvas');work.width=W;work.height=H;
+const wctx=work.getContext('2d',{willReadFrequently:true});
+const ov=$('ov'),octx=ov.getContext('2d');
+function loadScript(u){return new Promise((res,rej)=>{const s=document.createElement('script');s.src=u;s.onload=res;s.onerror=()=>rej(new Error('cannot load '+u));document.head.appendChild(s);});}
+async function loadAI(){
+  if(model)return model;
+  $('ai').textContent='Loading AI model... (first time ~10 s)';
+  await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js');
+  await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js');
+  model=await cocoSsd.load({base:'lite_mobilenet_v2'});
+  $('ai').textContent='AI model ready';
+  return model;
+}
+async function startFollow(){
+  if(!gotFrame){$('ai').textContent='Camera not connected yet';return;}
+  try{await loadAI();}catch(e){$('ai').textContent='AI load failed: check internet and try again';return;}
+  following=true;
+  await api('mode?m=follow&spd='+spd.value);
+  if(!aiBusy)aiLoop();
+}
+function drawBoxes(people,best){
+  ov.width=ov.clientWidth;ov.height=ov.clientHeight;
+  const sx=ov.width/W,sy=ov.height/H;
+  octx.clearRect(0,0,ov.width,ov.height);
+  octx.lineWidth=3;octx.font='14px sans-serif';
+  people.forEach(p=>{const[b0,b1,b2,b3]=p.bbox;
+    octx.strokeStyle=p===best?'#0f0':'#ff0';
+    octx.strokeRect(b0*sx,b1*sy,b2*sx,b3*sy);
+    octx.fillStyle=octx.strokeStyle;
+    octx.fillText('person '+Math.round(p.score*100)+'%',b0*sx+4,b1*sy+16);});
+}
+async function aiLoop(){
+  if(!following){aiBusy=false;octx.clearRect(0,0,ov.width,ov.height);$('ai').textContent='';return;}
+  aiBusy=true;
+  let seen=0,x=0,h=0;
+  const t0=performance.now();
+  try{
+    wctx.drawImage(cam,0,0,W,H);
+    const preds=await model.detect(work,6,0.5);
+    const people=preds.filter(p=>p.class==='person');
+    let best=null;
+    people.forEach(p=>{if(!best||p.bbox[2]*p.bbox[3]>best.bbox[2]*best.bbox[3])best=p;});
+    drawBoxes(people,best);
+    if(best){const[b0,,b2,b3]=best.bbox;x=((b0+b2/2)/W)*2-1;h=b3/H;seen=1;}
+    fpsN++;const now=performance.now();
+    if(now-fpsT>1000){$('ai').textContent='AI: '+fpsN+' fps | '+(seen?'person detected':'no person');fpsN=0;fpsT=now;}
+  }catch(e){$('ai').textContent='AI error: '+e.message;}
+  api('follow?seen='+seen+'&x='+Math.round(x*100)+'&h='+Math.round(h*100));
+  // over the internet, don't send faster than ~10/s
+  setTimeout(aiLoop,Math.max(20,100-(performance.now()-t0)));
+}
+</script></body></html>
