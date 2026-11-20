@@ -36,6 +36,22 @@ a{color:#7fb0ff}
 #login button{width:100%}
 .err{color:var(--bad);font-size:14px;min-height:20px}
 .hide{display:none}
+.hrow{display:grid;grid-template-columns:22px 130px 1fr;gap:8px;align-items:start;padding:9px 0;border-top:1px solid var(--line);font-size:14px}
+.hrow:first-child{border-top:0}
+.hrow .nm{font-weight:600}
+.hrow .dt{color:var(--mute);word-break:break-word}
+.hrow .dt b{color:var(--fg);font-weight:600}
+.lamp{width:12px;height:12px;border-radius:50%;margin-top:4px;background:#555}
+.lamp.ok{background:var(--ok)}.lamp.warn{background:var(--warn)}.lamp.bad{background:var(--bad)}
+.tag.ok{background:var(--ok);color:#fff}.tag.warn{background:var(--warn);color:#000}.tag.bad{background:var(--bad);color:#fff}
+.test{border-top:1px solid var(--line);margin-top:6px;padding-top:12px}
+.test .tl{font-size:14px;margin-bottom:8px}.test small{color:var(--mute)}
+.meta{color:var(--mute);font-size:13px}
+#testRes{margin-top:8px;font-size:14px;color:var(--fg)}
+.camwrap{border-top:1px solid var(--line);margin-top:12px;padding-top:12px}
+#camImg{display:block;width:100%;max-width:480px;margin-top:10px;border-radius:10px;background:#000;aspect-ratio:4/3}
+#camImg.hide{display:none}
+@media (max-width:520px){.hrow{grid-template-columns:18px 96px 1fr}}
 #toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#2c323e;padding:10px 16px;border-radius:10px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none}
 #toast.show{opacity:1}
 </style></head><body>
@@ -66,6 +82,24 @@ a{color:#7fb0ff}
       <div class="stat"><small>Telegram</small><b id="sTg">-</b></div>
     </div>
     <div class="link" id="linkBox"></div>
+  </div>
+
+  <h2>Health check <span id="hSum" class="tag"></span></h2>
+  <div class="card">
+    <div id="health"></div>
+    <div class="test">
+      <div class="tl">Tests <small>(car must be on the ground with space around it; motor test spins ONE wheel for 0.5 s)</small></div>
+      <div class="acts">
+        <button data-t="sonar">Ultrasonic</button><button data-t="servo">Servo</button>
+        <button data-t="m0">Motor FL</button><button data-t="m1">Motor FR</button>
+        <button data-t="m2">Motor RL</button><button data-t="m3">Motor RR</button>
+      </div>
+      <div id="testRes" class="meta"></div>
+    </div>
+    <div class="camwrap">
+      <button id="camBtn">Show live camera</button>
+      <img id="camImg" class="hide" alt="Live camera">
+    </div>
   </div>
 
   <h2>Waiting for permission</h2>
@@ -119,6 +153,79 @@ function fill(box,list,now,kind,emptyText){
   box.replaceChildren(...(list.length?list.map(u=>userRow(u,now,kind)):[el('div',{className:'empty',textContent:emptyText})]));
 }
 
+// ---------------- health ----------------
+function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function dur(s){if(s==null)return'-';s=Math.round(s);return s<60?s+'s':s<3600?Math.floor(s/60)+'m '+(s%60)+'s':Math.floor(s/3600)+'h '+Math.floor(s%3600/60)+'m';}
+function rssiLvl(r){return r>=-67?'ok':r>=-80?'warn':'bad';}
+function rssiTxt(r){return '<b>'+r+' dBm</b> ('+(r>=-67?'good':r>=-80?'weak':'very weak')+')';}
+const BADRESET=/BROWNOUT|CRASH|PANIC|WATCHDOG/i;
+const SENSORS={0x26:'OV2640',0x3660:'OV3660',0x5640:'OV5640',0x7725:'OV7725'};
+function renderHealth(s){
+  const H=s.car_health||{},C=s.cam_health||{};
+  const fresh=s.car_connected&&s.car_health_age!=null&&s.car_health_age<8;
+  const cfresh=s.cam_connected&&s.cam_health_age!=null&&s.cam_health_age<15;
+  const rows=[],add=(l,n,h)=>rows.push([l,n,h]);
+
+  if(!s.car_connected)add('bad','Car link','Car is <b>not connected</b> to the cloud. Check power, Wi-Fi name/password and that Robot_Cloud is flashed.');
+  else if(!fresh)add('warn','Car link','Connected '+dur(s.car_link_s)+' but no health report (old firmware?)');
+  else add('ok','Car link','Connected for '+dur(s.car_link_s));
+
+  if(fresh){
+    add(rssiLvl(H.rssi),'Car Wi-Fi','<b>'+esc(H.ssid)+'</b> · '+rssiTxt(H.rssi)+' · IP '+esc(H.ip));
+    const ctlBad=BADRESET.test(H.reset)||H.loop_ms>150||H.heap<30000;
+    add(ctlBad?'warn':'ok','Main ESP32','Up '+dur(H.uptime)+' · last reset: <b>'+esc(H.reset)+'</b> · free RAM '+Math.round(H.heap/1024)+' KB · slowest loop '+H.loop_ms+' ms');
+
+    const B=H.bat||{};
+    if(!B.on)add('','Battery','Monitoring disabled in firmware');
+    else if(B.v<1)add('bad','Battery','<b>0 V</b> - voltage divider on GPIO35 not connected');
+    else add(B.crit?'bad':B.low?'warn':'ok','Battery','<b>'+B.v.toFixed(2)+' V</b> now · '+(B.rest>0?B.rest.toFixed(2)+' V at rest':'rest value pending')+(B.crit?' · <b>CRITICAL</b>':B.low?' · <b>LOW</b>':''));
+
+    const M=H.motors||{},pw=M.pwm||[0,0,0,0],mt=/^Motor/.test(H.test||'')?H.test:'';
+    add(/NO current/.test(mt)?'bad':mt?'ok':'','Motors','Driver STBY <b>'+(M.stby?'ON':'OFF')+'</b> · PWM FL '+pw[0]+' / FR '+pw[1]+' / RL '+pw[2]+' / RR '+pw[3]+(mt?'':' · run a motor test to check each wheel'));
+
+    const S=H.sonar||{},tot=(S.ok||0)+(S.miss||0);
+    if(S.ok>0)add('ok','Ultrasonic','Echo '+S.ok+'/'+tot+' readings · distance <b>'+(S.d>=999?'clear':Math.round(S.d)+' cm')+'</b>');
+    else if(S.last_echo_s<0||S.last_echo_s>30)add('bad','Ultrasonic','<b>No echo</b>'+(S.last_echo_s>0?' for '+dur(S.last_echo_s):' since start')+' - nothing within 4 m, or TRIG(5)/ECHO(34) wiring problem');
+    else add('warn','Ultrasonic','No echo for '+dur(S.last_echo_s)+' (open space?)');
+
+    const V=H.servo||{};
+    add(V.on?(/^Servo/.test(H.test||'')?'ok':''):'','Servo',V.on?'Angle <b>'+V.angle+'°</b>'+(/^Servo/.test(H.test||'')?'':' · run the servo test'):'Disabled in firmware');
+
+    add(H.oled===1?'ok':H.oled===0?'bad':'','OLED display',H.oled===1?'Detected on I2C':H.oled===0?'<b>Not found</b> on I2C - check SDA 21 / SCL 22 / power':'Disabled in firmware');
+  }
+
+  if(!s.cam_connected)add('bad','Camera link','Camera is <b>not connected</b> to the cloud. Check power and that Camera_Cloud is flashed.');
+  else if(!s.cam_streaming)add('ok','Camera link','Connected '+dur(s.cam_link_s)+' · idle (sends video only while someone watches)');
+  else if(s.cam_fps>0)add('ok','Camera link','Streaming <b>'+s.cam_fps+' fps</b> · '+s.cam_frame_kb+' KB per frame');
+  else add('warn','Camera link','Asked to stream but <b>no frames</b> for '+dur(s.cam_frame_age));
+
+  if(cfresh){
+    const camBad=C.fails>0||BADRESET.test(C.reset)||!C.psram;
+    add(camBad?'warn':rssiLvl(C.rssi),'Camera board','Wi-Fi '+rssiTxt(C.rssi)+' · sensor <b>'+esc(SENSORS[C.pid]||('PID 0x'+(C.pid||0).toString(16)))+'</b> · PSRAM '+(C.psram?'yes':'<b>NO</b>')
+      +' · capture failures <b>'+C.fails+'</b> · up '+dur(C.uptime)+' · last reset: <b>'+esc(C.reset)+'</b>');
+  }
+
+  add('ok','Cloud server','Up '+dur(s.server_uptime));
+
+  $('health').innerHTML=rows.map(([l,n,h])=>'<div class="hrow"><span class="lamp '+l+'"></span><span class="nm">'+n+'</span><span class="dt">'+h+'</span></div>').join('');
+  const nb=rows.filter(r=>r[0]==='bad').length,nw=rows.filter(r=>r[0]==='warn').length;
+  const sum=$('hSum');sum.textContent=nb?nb+' problem'+(nb>1?'s':''):nw?nw+' warning'+(nw>1?'s':''):'all OK';
+  sum.className='tag '+(nb?'bad':nw?'warn':'ok');
+  $('testRes').textContent=fresh&&H.test?'Last test: '+H.test:'No test run yet.';
+  document.querySelectorAll('[data-t]').forEach(b=>b.disabled=!s.online);
+}
+document.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{
+  const t=b.dataset.t;
+  if(t[0]==='m'&&!confirm('Spin this ONE wheel for 0.5 s? Make sure the car cannot fall.'))return;
+  act('test',t);
+});
+$('camBtn').onclick=()=>{
+  const img=$('camImg'),show=img.classList.contains('hide');
+  img.classList.toggle('hide',!show);
+  img.src=show?'/cam/stream?t='+Date.now():'';
+  $('camBtn').textContent=show?'Hide camera':'Show live camera';
+};
+
 let busy=false;
 async function refresh(){
   if(busy)return;busy=true;
@@ -135,6 +242,7 @@ async function refresh(){
     $('sCam').textContent=s.cam_error==='idle'?'idle':s.cam_error?'problem':'streaming';
     $('sCam').title=s.cam_error;
     $('sTg').textContent=s.telegram==='connected'?'on ('+s.tg_admins+' admin chat)':s.telegram;
+    renderHealth(s);
     const lb=$('linkBox');
     if(s.public_url){
       lb.replaceChildren('Public link: ',el('a',{href:s.public_url,textContent:s.public_url,target:'_blank'}),
