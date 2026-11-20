@@ -118,6 +118,7 @@ class Store:
 
 STORE = Store()
 ADMIN_SESSIONS = set()
+STARTED = time.time()
 
 
 # ============================================================ car link
@@ -126,6 +127,8 @@ class Car:
         self.ws = None
         self.status = {}
         self.status_time = 0
+        self.health = {}
+        self.health_time = 0
         self.connected_at = 0
         self.ctrl_uid = None
         self.ctrl_name = ""
@@ -192,6 +195,14 @@ class Cam:
         self.cond = asyncio.Condition()
         self.last_want = 0
         self.streaming = False
+        self.health = {}
+        self.health_time = 0
+        self.connected_at = 0
+        self.frame_times = []   # recent frame arrival times, for fps
+
+    def fps(self):
+        t = now()
+        return round(sum(1 for x in self.frame_times if t - x < 2) / 2, 1)
 
     def connected(self):
         return self.ws is not None and not self.ws.closed
@@ -216,6 +227,7 @@ class Cam:
                 self.streaming = False
 
     async def push(self, data):
+        self.frame_times = [x for x in self.frame_times[-40:] if now() - x < 2] + [now()]
         async with self.cond:
             self.frame, self.frame_time = data, now()
             self.seq += 1
@@ -415,7 +427,20 @@ async def admin_action(action, uid, minutes=0):
     if action == "stop":
         await CAR.stop("admin emergency stop")
         return "Stop sent"
+    if action == "test":
+        if uid not in TESTS:
+            return "Unknown test"
+        CAR.claim("admin", "Owner")
+        try:
+            await CAR.send(f"test?t={uid}")
+        except Exception:
+            return "Car is offline"
+        return f"{TESTS[uid]} test started - result shows in Health in a few seconds"
     return "Unknown action"
+
+
+TESTS = {"sonar": "Ultrasonic", "servo": "Servo", "m0": "Front-left motor", "m1": "Front-right motor",
+         "m2": "Rear-left motor", "m3": "Rear-right motor"}
 
 
 async def revoke_all():
@@ -697,8 +722,18 @@ async def h_admin_state(req):
         users.append({"id": u["id"], "name": u["name"], "msg": u["msg"], "ip": u["ip"], "status": st,
                       "requested": u.get("requested", 0), "expires": u["expires"],
                       "last_seen": u.get("last_seen", 0), "driving": u["id"] == duid})
-    return J({"now": now(), "online": CAR.online, "robot": CAR.status, "robot_ip": CAR.status.get("ip"),
+    t = now()
+    return J({"now": t, "online": CAR.online, "robot": CAR.status, "robot_ip": CAR.status.get("ip"),
               "error": CAR.error(), "driver": dname, "cam_error": CAM.error(), "public_url": PUBLIC_URL,
+              "car_connected": CAR.ws is not None and not CAR.ws.closed,
+              "car_link_s": int(t - CAR.connected_at) if CAR.connected_at else 0,
+              "car_health": CAR.health, "car_health_age": round(t - CAR.health_time, 1) if CAR.health_time else None,
+              "cam_connected": CAM.connected(), "cam_streaming": CAM.streaming,
+              "cam_link_s": int(t - CAM.connected_at) if CAM.connected_at else 0,
+              "cam_fps": CAM.fps(), "cam_frame_kb": round(len(CAM.frame) / 1024, 1) if CAM.frame else 0,
+              "cam_frame_age": round(t - CAM.frame_time, 1) if CAM.frame_time else None,
+              "cam_health": CAM.health, "cam_health_age": round(t - CAM.health_time, 1) if CAM.health_time else None,
+              "server_uptime": int(t - STARTED),
               "users": users, "tg_admins": len(STORE.tg_admins()),
               "telegram": "off" if not TG else ("connected" if TG.ok else "error: " + TG.error)})
 
@@ -725,10 +760,13 @@ async def h_ws_car(req):
         async for msg in ws:
             if msg.type == WSMsgType.TEXT:
                 try:
-                    CAR.status = json.loads(msg.data)
-                    CAR.status_time = now()
+                    obj = json.loads(msg.data)
                 except ValueError:
-                    pass
+                    continue
+                if obj.get("type") == "health":
+                    CAR.health, CAR.health_time = obj, now()
+                else:
+                    CAR.status, CAR.status_time = obj, now()
     finally:
         if CAR.ws is ws:
             CAR.ws = None
@@ -744,7 +782,7 @@ async def h_ws_cam(req):
     await ws.prepare(req)
     if CAM.ws is not None and not CAM.ws.closed:
         await CAM.ws.close()
-    CAM.ws, CAM.streaming = ws, False
+    CAM.ws, CAM.streaming, CAM.connected_at = ws, False, now()
     log("Camera connected from", client_ip(req))
     if now() - CAM.last_want < 10:
         await CAM.want()
@@ -752,6 +790,13 @@ async def h_ws_cam(req):
         async for msg in ws:
             if msg.type == WSMsgType.BINARY and msg.data[:2] == b"\xff\xd8":
                 await CAM.push(msg.data)
+            elif msg.type == WSMsgType.TEXT:
+                try:
+                    obj = json.loads(msg.data)
+                    if obj.get("type") == "health":
+                        CAM.health, CAM.health_time = obj, now()
+                except ValueError:
+                    pass
     finally:
         if CAM.ws is ws:
             CAM.ws, CAM.streaming = None, False
