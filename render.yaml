@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: robocar
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: ADMIN_PASSWORD
+        generateValue: true
+      - key: CAR_KEY
+        generateValue: true
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TG_ADMIN_IDS
+        sync: false
