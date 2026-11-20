@@ -1,0 +1,163 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Car Admin</title>
+<style>
+:root{--bg:#0f1115;--card:#181b22;--line:#2a2f3a;--fg:#e9ecf1;--mute:#8b93a3;--acc:#2f7cf6;--ok:#2fb26a;--bad:#e5484d;--warn:#f0a020}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:860px;margin:0 auto;padding:16px}
+header{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+h1{font-size:20px;margin:0}
+h2{font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute);margin:22px 0 8px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.stat small{display:block;color:var(--mute);font-size:12px}
+.stat b{font-size:17px}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;background:var(--bad)}
+.dot.on{background:var(--ok)}
+button{border:0;border-radius:9px;padding:8px 12px;font:600 14px system-ui;cursor:pointer;background:#2c323e;color:var(--fg)}
+button.ok{background:var(--ok);color:#fff}
+button.bad{background:var(--bad);color:#fff}
+button.acc{background:var(--acc);color:#fff}
+button.big{padding:12px 18px;font-size:16px}
+a{color:#7fb0ff}
+.link{display:flex;gap:8px;align-items:center;flex-wrap:wrap;word-break:break-all;margin-top:10px;font-size:14px}
+.u{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 0;border-top:1px solid var(--line)}
+.u:first-child{border-top:0}
+.u .who b{font-size:16px}
+.u .meta{color:var(--mute);font-size:13px}
+.u .msg{font-size:14px;margin-top:2px}
+.acts{display:flex;gap:6px;flex-wrap:wrap}
+.tag{font-size:12px;padding:2px 8px;border-radius:99px;background:#2c323e;margin-left:6px}
+.tag.drv{background:var(--ok);color:#fff}
+.empty{color:var(--mute);font-size:14px;padding:6px 0}
+#login{max-width:340px;margin:12vh auto}
+#login input{width:100%;padding:11px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--fg);font:inherit;margin:10px 0}
+#login button{width:100%}
+.err{color:var(--bad);font-size:14px;min-height:20px}
+.hide{display:none}
+#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#2c323e;padding:10px 16px;border-radius:10px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none}
+#toast.show{opacity:1}
+</style></head><body>
+<main>
+<div id="login" class="card hide">
+  <h1>&#128274; Car owner login</h1>
+  <input id="pw" type="password" placeholder="Admin password" autocomplete="current-password">
+  <button class="acc big" id="loginBtn">Log in</button>
+  <div class="err" id="lerr"></div>
+</div>
+
+<div id="dash" class="hide">
+  <header>
+    <h1>&#128663; Car admin</h1>
+    <div class="acts">
+      <a href="/" target="_blank"><button>Drive</button></a>
+      <button class="bad big" id="stopBtn">&#9632; EMERGENCY STOP</button>
+    </div>
+  </header>
+
+  <div class="card">
+    <div class="grid">
+      <div class="stat"><small>Car</small><b id="sCar">-</b></div>
+      <div class="stat"><small>Mode</small><b id="sMode">-</b></div>
+      <div class="stat"><small>Battery</small><b id="sBat">-</b></div>
+      <div class="stat"><small>Driver now</small><b id="sDrv">-</b></div>
+      <div class="stat"><small>Camera</small><b id="sCam">-</b></div>
+      <div class="stat"><small>Telegram</small><b id="sTg">-</b></div>
+    </div>
+    <div class="link" id="linkBox"></div>
+  </div>
+
+  <h2>Waiting for permission</h2>
+  <div class="card" id="pending"></div>
+
+  <h2>Have access <button id="revAll" class="bad" style="float:right;padding:4px 10px;font-size:12px">Revoke all</button></h2>
+  <div class="card" id="active"></div>
+
+  <h2>History</h2>
+  <div class="card" id="history"></div>
+
+  <p style="margin-top:24px"><button id="logout">Log out</button></p>
+</div>
+</main>
+<div id="toast"></div>
+<script>
+const $=id=>document.getElementById(id);
+function el(tag,props,...kids){const e=document.createElement(tag);Object.assign(e,props||{});kids.forEach(k=>e.append(k));return e;}
+function toast(t){$('toast').textContent=t;$('toast').classList.add('show');clearTimeout(toast.t);toast.t=setTimeout(()=>$('toast').classList.remove('show'),2200);}
+function ago(t,now){if(!t)return'never';const s=Math.round(now-t);return s<60?s+'s ago':s<3600?Math.round(s/60)+'m ago':Math.round(s/3600)+'h ago';}
+function left(u,now){if(!u.expires)return'no time limit';const s=Math.round(u.expires-now);return s>0?Math.floor(s/60)+'m '+(s%60)+'s left':'expired';}
+
+async function act(action,id,minutes){
+  const r=await fetch('/admin/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,id,minutes})});
+  if(r.status===401)return showLogin();
+  const j=await r.json();toast(j.msg||j.error);refresh();
+}
+function btn(text,cls,fn){return el('button',{className:cls,textContent:text,onclick:fn});}
+
+function userRow(u,now,kind){
+  const who=el('div',{className:'who'});
+  const name=el('b',{textContent:u.name});
+  who.append(name);
+  if(u.driving)who.append(el('span',{className:'tag drv',textContent:'DRIVING'}));
+  if(kind==='history')who.append(el('span',{className:'tag',textContent:u.status}));
+  if(u.msg)who.append(el('div',{className:'msg',textContent:'"'+u.msg+'"'}));
+  const meta=kind==='active'?left(u,now)+' · seen '+ago(u.last_seen,now):'asked '+ago(u.requested,now);
+  who.append(el('div',{className:'meta',textContent:meta+' · '+u.ip}));
+  const acts=el('div',{className:'acts'});
+  if(kind==='pending'){
+    acts.append(btn('15 min','ok',()=>act('approve',u.id,15)),btn('1 hour','ok',()=>act('approve',u.id,60)),
+      btn('1 day','ok',()=>act('approve',u.id,1440)),btn('Always','ok',()=>act('approve',u.id,0)),btn('Deny','bad',()=>act('deny',u.id)));
+  }else if(kind==='active'){
+    acts.append(btn('+1 hour','',()=>act('approve',u.id,60)),btn('Revoke','bad',()=>act('revoke',u.id)));
+  }else{
+    acts.append(btn('Allow 1 hour','',()=>act('approve',u.id,60)),btn('Delete','',()=>act('delete',u.id)));
+  }
+  return el('div',{className:'u'},who,acts);
+}
+function fill(box,list,now,kind,emptyText){
+  box.replaceChildren(...(list.length?list.map(u=>userRow(u,now,kind)):[el('div',{className:'empty',textContent:emptyText})]));
+}
+
+let busy=false;
+async function refresh(){
+  if(busy)return;busy=true;
+  try{
+    const r=await fetch('/admin/api/state',{cache:'no-store'});
+    if(r.status===401){showLogin();return;}
+    const s=await r.json(),R=s.robot||{};
+    $('login').classList.add('hide');$('dash').classList.remove('hide');
+    $('sCar').replaceChildren(el('span',{className:'dot'+(s.online?' on':'')}),s.online?'Online'+(s.robot_ip?' ('+s.robot_ip+')':''):'Offline');
+    $('sCar').title=s.online?'':s.error;
+    $('sMode').textContent=R.mode||'-';
+    $('sBat').textContent=R.bat>1?R.bat.toFixed(2)+' V'+(R.crit?' CRIT':R.low?' LOW':''):'-';
+    $('sDrv').textContent=s.driver||'nobody';
+    $('sCam').textContent=s.cam_error==='idle'?'idle':s.cam_error?'problem':'streaming';
+    $('sCam').title=s.cam_error;
+    $('sTg').textContent=s.telegram==='connected'?'on ('+s.tg_admins+' admin chat)':s.telegram;
+    const lb=$('linkBox');
+    if(s.public_url){
+      lb.replaceChildren('Public link: ',el('a',{href:s.public_url,textContent:s.public_url,target:'_blank'}),
+        btn('Copy','',()=>{navigator.clipboard.writeText(s.public_url).then(()=>toast('Link copied'));}));
+    }else lb.textContent='No public link (tunnel not running). Local only.';
+    const P=s.users.filter(u=>u.status==='pending'),A=s.users.filter(u=>u.status==='approved'),
+          Hh=s.users.filter(u=>!['pending','approved'].includes(u.status));
+    fill($('pending'),P,s.now,'pending','No requests right now.');
+    fill($('active'),A,s.now,'active','Nobody has access.');
+    fill($('history'),Hh,s.now,'history','Empty.');
+    document.title=(P.length?'('+P.length+') ':'')+'Car Admin';
+  }catch(e){}finally{busy=false;}
+}
+function showLogin(){$('dash').classList.add('hide');$('login').classList.remove('hide');$('pw').focus();}
+async function login(){
+  $('lerr').textContent='';
+  const r=await fetch('/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:$('pw').value})});
+  if(r.ok){$('pw').value='';refresh();}else $('lerr').textContent='Wrong password';
+}
+$('loginBtn').onclick=login;
+$('pw').addEventListener('keydown',e=>{if(e.key==='Enter')login();});
+$('stopBtn').onclick=()=>act('stop','');
+$('revAll').onclick=()=>{if(confirm('Remove access for everyone?'))act('revoke_all','');};
+$('logout').onclick=async()=>{await fetch('/admin/logout',{method:'POST'});showLogin();};
+refresh();setInterval(refresh,2000);
+</script></body></html>
